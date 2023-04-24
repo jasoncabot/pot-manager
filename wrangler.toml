@@ -1,0 +1,8 @@
+name = "pot-manager"
+main = "src/index.ts"
+compatibility_date = "2023-04-23"
+
+[[kv_namespaces]]
+binding = "STATE_TOKENS"
+id = "77a87f8084274a2093091bb5a3d66be3"
+preview_id = "50627f481fe5462d86f613ac1bef0801"

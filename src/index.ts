@@ -139,7 +139,7 @@ export default {
       }
 
       // we have a valid account id, so look up the pots and balances
-      const potsResponse = await fetch(
+      let potsResponse = await fetch(
         `https://api.monzo.com/pots?current_account_id=${accountId}`,
         {
           headers: {
@@ -148,7 +148,24 @@ export default {
         }
       );
 
+      // if the response is not ok, then refresh the access token and try again
+      if (!potsResponse.ok) {
+        accessToken = await this.refreshAccessToken(userId, env);
+        potsResponse = await fetch(
+          `https://api.monzo.com/pots?current_account_id=${accountId}`,
+          {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+            },
+          }
+        );
+      }
+
       const pots = (await potsResponse.json()) as PotsResponse;
+
+      if (!pots.pots) {
+        return new Response(`no pots found`, { status: 400 });
+      }
 
       // convert the list of pots into a smaller and simpler list of balances (and images)
       const balances = pots.pots

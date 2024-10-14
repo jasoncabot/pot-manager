@@ -23,16 +23,6 @@ type AccountsResponse = {
   }[];
 };
 
-type PotsResponse = {
-  pots: {
-    id: string;
-    name: string;
-    balance: number;
-    cover_image_url: string;
-    currency: string;
-  }[];
-};
-
 export default {
   async fetch(
     request: Request,
@@ -106,8 +96,6 @@ export default {
       const secret = atob(url.searchParams.get("secret") || "").trim();
       // lookup the user id from the user query parameter
       const userId = url.searchParams.get("user_id");
-      const potIds = url.searchParams.get("pot_ids") || "";
-      const potIdArray = potIds.split(",");
 
       if (!userId || !secret || secret !== expectedSecret) {
         return new Response(`invalid secret or user_id`, { status: 400 });
@@ -115,15 +103,18 @@ export default {
 
       let accessToken = await env.STATE_TOKENS.get(`access_token:${userId}`);
       if (!accessToken) {
+        console.log("No access token found, refreshing");
         accessToken = await this.refreshAccessToken(userId, env);
       }
 
       // find the account id by looking at this users account and getting the first joint account id
-      let accountId = await env.STATE_TOKENS.get(`account_id:${userId}`);
-      if (!accountId) {
-        // find the first account of type uk_retail_joint
+      let accountIds =
+        (await env.STATE_TOKENS.get(`account_ids:${userId}`))?.split(";") || [];
+      if (accountIds.length === 0) {
+        console.log("No account ids found, fetching from Monzo API");
+        // find the first account of type uk_retail_young
         const accountsResponse = await fetch(
-          "https://api.monzo.com/accounts?account_type=uk_retail_joint",
+          "https://api.monzo.com/accounts?account_type=uk_retail_young",
           {
             headers: {
               Authorization: `Bearer ${accessToken}`,
@@ -133,54 +124,48 @@ export default {
 
         const accounts = (await accountsResponse.json()) as AccountsResponse;
 
-        // store the account id of the first joint account
-        accountId = accounts.accounts[0].id;
-        await env.STATE_TOKENS.put(`account_id:${userId}`, accountId);
+        // store all child accounts in the KV store
+        accountIds = accounts.accounts.map((a) => a.id);
+        await env.STATE_TOKENS.put(
+          `account_ids:${userId}`,
+          accountIds.join(";")
+        );
       }
+      console.log("Loading data from accounts", accountIds);
 
-      // we have a valid account id, so look up the pots and balances
-      let potsResponse = await fetch(
-        `https://api.monzo.com/pots?current_account_id=${accountId}`,
-        {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-          },
-        }
-      );
-
-      // if the response is not ok, then refresh the access token and try again
-      if (!potsResponse.ok) {
-        accessToken = await this.refreshAccessToken(userId, env);
-        potsResponse = await fetch(
-          `https://api.monzo.com/pots?current_account_id=${accountId}`,
+      const balances: { balance: string }[] = [];
+      for (let i = 0; i < accountIds.length; i++) {
+        console.log("Fetching balance for account", accountIds[i]);
+        let balance = await fetch(
+          `https://api.monzo.com/balance?account_id=${accountIds[i]}`,
           {
             headers: {
               Authorization: `Bearer ${accessToken}`,
             },
           }
         );
-      }
 
-      const pots = (await potsResponse.json()) as PotsResponse;
+        if (balance.status === 401) {
+          console.log("Refreshing access token");
+          accessToken = await this.refreshAccessToken(userId, env);
+          balance = await fetch(
+            `https://api.monzo.com/balance?account_id=${accountIds[i]}`,
+            {
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+              },
+            }
+          );
+        }
 
-      if (!pots.pots) {
-        return new Response(`no pots found`, { status: 400 });
-      }
-
-      // convert the list of pots into a smaller and simpler list of balances (and images)
-      const balances = pots.pots
-        .filter((pot) => potIdArray.find((id) => id === pot.id))
-        .map((pot) => {
-          return {
-            name: pot.name,
-            // format the pot.balance as a currency string
-            balance: new Intl.NumberFormat("en-GB", {
-              style: "currency",
-              currency: pot.currency,
-            }).format(pot.balance / 100),
-            cover_image_url: pot.cover_image_url,
-          };
+        const bal = (await balance.json()) as any;
+        balances.push({
+          balance: new Intl.NumberFormat("en-GB", {
+            style: "currency",
+            currency: bal.currency,
+          }).format(bal.balance / 100),
         });
+      }
 
       return new Response(JSON.stringify(balances), {
         status: 200,
